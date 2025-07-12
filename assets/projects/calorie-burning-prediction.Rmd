@@ -1,0 +1,578 @@
+---
+title: "Predicting the Amount of Calories Burned During a Workout"
+author: "Kerry Yu"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: journal
+    df_print: kable
+  pdf_document: 
+    toc: true
+---
+
+# Introduction
+
+## What is our goal?
+
+The goal of this project is to build a model that will predict the amount of calories a person will burn during a workout. The big question of day is **"How many calories will a person burn during a specific workout session?"**. The calories a person burns represents the total energy expenditure during physical activity. It is influenced by physiological attributes (weight, age, sex) and external factors in workout sessions (type, intensity, duration).
+
+## Why?
+
+At the start of this school year, I was really interested in bettering my health and my fitness, so I started going to the gym in an attempt to lose some weight. In this pursuit, I realized that being able to understand the factors that influence the amount of calories burned provides helpful information on improving workout routines. By being able to estimate the amount calories a person burns during a workout, they can change up their routines to align with their own fitness goals, such as weight loss, endurance building, and strength improvement.
+
+# Exploratory Data Analysis
+
+## Data Description
+
+The dataset for this project was retrieved from Kaggle, titled [**"Gym Members Exercise Tracking Dataset"**](https://www.kaggle.com/datasets/valakhorasani/gym-members-exercise-dataset/data) by user Vala Khorasani.
+
+First, we'll have to load our packages and read in our data to be able to work with it.
+
+```{r include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(dplyr)
+library(ggplot2)
+library(corrr)
+library(corrplot)
+library(kknn)
+library(xgboost)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(kableExtra)
+library(knitr)
+library(naniar)
+tidymodels_prefer()
+theme_set(theme_bw())
+
+print.data.frame <- rmarkdown:::print.paged_df
+```
+
+```{r}
+fitness <- read.csv("/Users/kerryyu/Documents/131/Final Project/data/gym_members_exercise_tracking.csv")
+set.seed(076)
+fitness <- clean_names(fitness)
+
+print(head(fitness))
+```
+
+## Missing Data
+
+Let's play around with our data to see what we are working with.
+
+```{r}
+dim(fitness)
+```
+
+So as we can see, the dataset has a total of 973 observations with 15 variables. Next, we will check for missing values in the dataset. With a relatively small dataset, we will need to deal with missing values with care. We cannot afford to remove any data. Every piece of data counts!
+
+```{r}
+vis_miss(fitness)
+```
+
+Lucky us! As shown in the figure above, 100% of the observations of dataset is present with **zero** missing values! There is nothing we have to do to get rid of / replace missing data since there are none.
+
+## Tidying Our Data
+
+15 predictors is not a lot, but not all the predictors provided are as relevant in predicting calorie burn per session. So, we'll be dropping a couple variables to best fit our model. For example, a variable like `workout_frequency_days_week` does not provide useful information for calorie burn during a *specific* session; it can help with calorie burn for weekly goals, but that's not our focus right now.
+
+Since `workout_type` is a categorical predictor, we will be converting it to a factor variable.
+
+```{r}
+fitness <- fitness %>% 
+  select(c("calories_burned", "age", "weight_kg", "avg_bpm", "session_duration_hours", "workout_type", "fat_percentage", "bmi")) %>% 
+  mutate(workout_type = factor(workout_type))
+print(head(fitness))
+```
+
+The variables selected for our model are listed below:
+
+-   `age`: the age of the individual.
+
+-   `weight_kg`: the weight of the individual measured in kilograms (kg).
+
+-   `avg_bpm`: the average heart rate (beats per minute) of the individual during the workout session.
+
+-   `session_duration_hours`: the total time spent during the workout session in hours.
+
+-   `workout_type`: the type of workout the individual performed (Cardio, Strength, Yoga, HIIT)
+
+-   `fat_percentage`: individual's body fat percentage
+
+-   `bmi`: the individual's body mass index (BMI) calculated as weight (kg) divided by height squared ($\hbox{m}^2$)
+
+Now that our dataset has been tidied, we're ready for some exploratory data analysis!
+
+## Visual EDA
+
+Just to get a better feel for our data, we will be looking at the overall distribution of our response variable. We will also create visualizations on the strength of effect a few of our predictors has on the amount of calories burnt.
+
+### Calories Burned Distribution
+
+Let's first take a look at our response, `calories_burned`, and its distribution.
+
+```{r}
+fitness %>% 
+  ggplot(aes(calories_burned)) +
+  geom_histogram(bins = 75, fill = "pink2") +
+  labs(title = "Distribution of Calories Burned")
+```
+
+The data spans a wide range of values, from around 300 - 1600 calories burned in a session. This indicates variability in the data. Most of the data falls within the 600 - 1200 range with a couple outliers in the 1500 - 1600 range.
+
+### Correlation
+
+Now let's look at a correlation plot of our numeric variables to get an idea of thei relationships.
+
+```{r}
+fitness %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(type = "lower")
+```
+
+Wow! It looks like `session_duration_hours` and `calories_burned` have a very strong positive correlation (dark blue). Who knew that working out for longer increases the amount of calories burned? Just kidding, I'm pretty sure we all knew that.
+
+There also appears to be another positive correlation between `avg_bpm` and `calories_burned`, but this time it's a more moderate correlation. This suggests that higher average heart rate (bpm) means working out at generally higher intensity, leading to more calories burned.
+
+It also looks like `fat_percentage` and `calories_burned` has a pretty strong negative correlation. This might suggest that individuals with with a higher fat percentage typically burn less calories. This may be due to lower fitness levels or exercise efficiency.
+
+### Workout Type
+
+Since `workout_type` isn't a numeric variable, its relationship with `calories_burned` hasn't been visualized. Let's take a look at it using a box plot!
+
+```{r message=FALSE}
+fitness %>% 
+  ggplot(aes(x = calories_burned, y = workout_type)) +
+  geom_boxplot(fill = c("lightblue", "navajowhite", "pink", "plum")) +
+  labs(title = "Box Plot of Workout Type vs Calories Burned")
+```
+
+The difference in `calories_burned` throughout different workout methods isn't as spread apart as I would have expected. This indicates that the `workout_type` may not have as much of an impact on the response. `workout_type` may not be a strong standalone predictor for `calories_burned`, but predictive accuracy will improve by adding more variables!
+
+Next, we will be looking at the stronger relationships between `calories_burned` and:
+
+-   `avg_bpm`
+-   `session_duration_hours`
+-   `fat_percentage`
+
+### Average Heart Rate
+
+Let's start off by looking at the relationship between `avg_bpm` and `calories_burned`.
+
+```{r message=FALSE}
+fitness %>% 
+  ggplot(aes(x = avg_bpm, y = calories_burned)) +
+  geom_jitter(size = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(title = "Calories Burned vs. Average Heart Rate")
+```
+
+We can see that there is a slight positive relationship between the two, indicating that average heart rate may have an impact on the response.
+
+### Session Duration
+
+Next, we'll look at a plot of a stronger positive correlation involving `calories_burned`.
+
+```{r message=FALSE}
+fitness %>% 
+  ggplot(aes(x = session_duration_hours, y = calories_burned)) +
+  geom_jitter(size = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(title = "Calories Burned vs. Session Duration")
+```
+
+This is a much stronger positive relationship than the previous and it is very visible! Most of the points fall very close to the line, indicating that session duration may have a strong impact on our response. This looks like this is going to be our most impactful variable!
+
+### Fat Percentage
+
+Finally, let's take a look at a plot of an inverse relationship (negative correlation) involving `calories_burned`.
+
+```{r message=FALSE}
+fitness %>% 
+  ggplot(aes(x = fat_percentage, y = calories_burned)) +
+  geom_jitter(size = 0.5) +
+  geom_smooth(method = "lm", col="red3") +
+  labs(title = "Calories Burned vs. Fat Percentage")
+```
+
+I would say that this is an in-between of all three relationships. The point are not as scattered, but they also aren't as close together. This indicates an impact, but it's not as strong as the previous.
+
+# Setting Up The Models
+
+It's now time to start setting up our models! Now that we have better knowledge on how our more important variables affect the calories a person burns, we can finally start our data split, recipe creation, and cross validation.
+
+## Data Split
+
+Before we actually build and train our models, we have to split the data in two separate sets: training and testing. Normally, you would want split your dataset into a 70/30 or 80/20 training to testing ratio. For my split, I will be using a 70/30 ratio: 70% of my data will go into training the models and the other 30% will go into testing the models. But first! Set a seed so that these results are **reproducible**. Now, let's split our data, but remember to stratify on our response variable, `calories_burned`.
+
+```{r}
+set.seed(076)
+
+fitness_split <- initial_split(fitness, prop = 0.7, strata = calories_burned)
+fitness_train <- training(fitness_split)
+fitness_test <- testing(fitness_split)
+```
+
+## Recipe Creation
+
+After splitting the data, we will have to create a recipe by putting together our predictors and our response. A recipe in this case is just like a recipe for cooking a dish in real life! Our ingredients are the predictors, while the dish we are *hoping* to make is our response variable. Our training dataset is what we are using to "cook" (train) our models. Next we'll normalize all our variables by centering and scaling them. We do this by using step functions; these are the steps to prepare our data.
+
+```{r}
+fitness_recipe <- recipe(calories_burned ~ age + weight_kg + avg_bpm + session_duration_hours + workout_type + fat_percentage + bmi, 
+                         data = fitness_train) %>% 
+  step_dummy(workout_type) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+
+## K-Fold Cross Validation
+
+OK! Now you have the recipe, but how do you know if it's any good? Instead of making the whole dish once and guessing if the food is good, you should split the ingredients into smaller portions and test the recipe multiple times. This is what **k-fold cross validation** does! The most commonly used amounts of folds to use are 5 and 10. I decided on 10 folds for my models.
+
+```{r}
+fitness_folds <- vfold_cv(fitness_train, v = 10, strata = calories_burned)
+```
+
+# Building Our Prediction Models
+
+It's finally time! Let's start building our models! I am planning to set up and train a total of 5 models: Linear Regression, Ridge Regression, k-Nearest Neighbors, Random Forests, and Boosted Trees! With much bigger datasets, learning models require a lot of computing power and they take a very long time to run. Our dataset isn't huge, but it definitely does take a bit of time to fully run. To solve this, we will be saving our models into separate RDS files and loading them into the program to avoiding re-running the models multiple times.
+
+## Setting up the model
+
+First we have to specify what kind of model we are intending to build, set the engine, and set the mode. Since this is a regression problem, we will be specifying the modes for all models as "regression".
+
+```{r}
+# Linear Regression
+lm_model <- linear_reg() %>% 
+  set_engine("lm")
+
+# Ridge Regression
+ridge_model <- linear_reg(mixture = 0, 
+                         penalty = tune()) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("regression")
+
+# k-Nearest Neighbors
+knn_model <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+  
+# Random Forest
+random_model <- rand_forest(mtry = tune(), 
+                       trees = tune(), 
+                       min_n = tune()) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+
+# Boosted Trees
+boosted_model <- boost_tree(trees = tune(),
+                           learn_rate = tune(),
+                           min_n = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+```
+
+## Setting up the workflow
+
+Next, we have to set up the workflow. In this workflow, we add the model we just created and the recipe.
+
+```{r}
+# Linear Regression
+lm_wf <- workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(fitness_recipe)
+
+# Ridge Regression
+ridge_wf <- workflow() %>% 
+  add_model(ridge_model) %>% 
+  add_recipe(fitness_recipe)
+
+
+# k-Nearest Neighbors
+knn_wf <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(fitness_recipe)
+
+# Random Forest
+random_wf <- workflow() %>% 
+  add_model(random_model) %>% 
+  add_recipe(fitness_recipe)
+  
+
+# Boosted Trees
+boosted_wf <- workflow() %>% 
+  add_model(boosted_model) %>% 
+  add_recipe(fitness_recipe)
+```
+
+## Creating the parameter grids
+
+Then, we set up the tuning grids with the parameters we want tuned *and* the levels for each parameter.
+
+```{r}
+# Linear Regression
+# No grid required because we didn't tune any parameters
+
+# Ridge Regression
+ridge_grid <- grid_regular(
+  penalty(range = c(0.01, 10)),
+  levels = 50
+)
+
+# k-Nearest Neighbors
+knn_grid <- grid_regular(
+  neighbors(range = c(1, 25)),
+  levels = 10
+)
+
+# Random Forest
+random_grid <- grid_regular(
+  mtry(range = c(1, 5)),
+  trees(range = c(200, 800)),
+  min_n(range = c(2, 10)),
+  levels = 5
+)
+
+
+# Boosted Trees
+boosted_grid <- grid_regular(
+  trees(range = c(10, 1000)),
+  learn_rate(range = c(0.01, 0.1), trans = identity_trans()),
+  min_n(range = c(10, 30)),
+  levels = 5
+)
+```
+
+## Tuning your model
+
+Tune the models with the workflows, cross validation folds, and parameter grids for each corresponding model. (This is the part that takes the most computational power.)
+
+```{r eval=FALSE}
+# Linear Regression
+# No tuning
+
+# Ridge Regression
+ridge_tune <- tune_grid(
+  ridge_wf,
+  resamples = fitness_folds,
+  grid = ridge_grid
+)
+
+# k-Nearest Neighbors
+knn_tune <- tune_grid(
+  knn_wf,
+  resamples = fitness_folds,
+  grid = knn_grid
+)
+
+# Random Forest
+random_tune <- tune_grid(
+  random_wf,
+  resamples = fitness_folds,
+  grid = random_grid
+)
+
+
+# Boosted Trees
+boosted_tune <- tune_grid(
+  boosted_wf,
+  resamples = fitness_folds,
+  grid = boosted_grid
+)
+```
+
+## Saving and loading your work
+
+Save your work into separate RDS files for each model.
+
+```{r eval=FALSE}
+# Linear Regression
+# No saving nor loading
+
+# Ridge Regression
+write_rds(ridge_tune, file = "data/tuned_models/ridge.rds")
+
+# k-Nearest Neighbors
+write_rds(knn_tune, file = "data/tuned_models/knn.rds")
+
+# Random Forest
+write_rds(random_tune, file = "data/tuned_models/random_forest.rds")
+
+# Boosted Tree
+write_rds(boosted_tune, file = "data/tuned_models/boosted_trees.rds")
+```
+
+And finally, load them into the program!
+
+```{r}
+# Linear Regression
+lm_fit <- fit_resamples(lm_wf, resamples = fitness_folds)
+
+# Ridge Regression
+ridge_tuned <- read_rds(file = "data/tuned_models/ridge.rds")
+
+# k-Nearest Neighbors
+knn_tuned <- read_rds(file = "data/tuned_models/knn.rds")
+
+# Random Forest
+random_tuned <- read_rds(file = "data/tuned_models/random_forest.rds")
+
+# Boosted Tree
+boosted_tuned <- read_rds(file = "data/tuned_models/boosted_trees.rds")
+```
+
+Now that we have our models pre-run and loaded, we can move onto the results of each and compare them! How easy and simple was that?
+
+# Model Results
+
+How can we tell if the model did a good job? So, I have chosen to use the Root Mean Squared Error (RMSE) as the metric to evaluate the performance of my models. RMSE is one of the most commonly used metrics to check the performance of a model, specifically regression models. Okay, so how do we use the RMSE to compare model performance? Well, the lower the value of the RMSE, the better the model performed.
+
+## Visualizing the results
+
+For the visualization of the results of our tuned models, we will be using the `autoplots` function. In these plots, we will be able to see how the model performed by the metric of RMSE. Let's go look at some graphs!
+
+### Ridge Regression
+
+```{r}
+autoplot(ridge_tuned, metric = "rmse")
+```
+
+We can see here that the RMSE for our Ridge Regression model starts at a constant low of around 50, but gradually goes up starting at around 1e+02 amount of regularization. The RMSE then plateaus at a high of around a RMSE value of 250. This indicates that more regularization worsens the model's performance.
+
+### k-Nearest Neighbors
+
+```{r}
+autoplot(knn_tuned, metric = "rmse")
+```
+
+In our k-Nearest Neighbors model, we tuned the number of neighbors. We can see that the RMSE drops dramatically as the number of neighbors reached 5, but starts to rise once the number of neighbors has passed 6. This indicates that the model performs the best at 6 neighbors, but the more neighbors you add to the model, the worse the performance.
+
+### Random Forest
+
+```{r}
+autoplot(random_tuned, metric = "rmse")
+```
+
+We tuned three different parameters for our Random Forest model:
+
+-   `mtry` - the number of predictors being considered when making each split
+-   `trees` - the total number of decision trees to build
+-   `min_n` - the minimum amount of observations required for the node to be split any further
+
+We can see here in the plots that the total number of trees `trees` does not seem to have a significant effect on the model's performance. The effect minimal node size `min_n` has on the model performance has a more significant effect on the model's performance, but it is a very minor effect. The number of randomly selected predictors `mtry` appears to have the most significant effect on the model's performance. The more predictors introduced, the better the model performed.
+
+### Boosted Trees
+
+```{r}
+autoplot(boosted_tuned, metric = "rmse")
+```
+
+We tuned three different parameters for our Boosted Tree model:
+
+-   `trees` - the total number of decision trees to build
+-   `learn_rate` - the learning rate
+-   `min_n` - the minimum amount of observations required for the node to be split any further
+
+The parameter with the least significant effect on model performance appears to be the minimal node size `min_n`. The total number of trees `trees` has a much more noticeable effect than minimal node size, but the learning rate takes the cake on significance. The model appears to perform the better as the learning rate increases. The number of trees doesn't have a huge impact on performance, but we can see that if the model has less than around 250 trees, it does significantly worse.
+
+## Comparing model results
+
+We've seen how each model performed by plotting the RMSE against the tuned parameters. Now, we want to know which model performed the best. So, I've put together something like a table to display the average RMSE value of each model against each other.
+
+```{r}
+lm_rmse <- lm_fit %>% 
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>% 
+  slice(1)
+
+ridge_rmse <- ridge_tuned %>% 
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>% 
+  arrange(mean)%>% 
+  slice(1)
+
+knn_rmse <- knn_tuned %>% 
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>% 
+  arrange(mean)%>% 
+  slice(1)
+
+random_rmse <- random_tuned %>% 
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>% 
+  arrange(mean)%>% 
+  slice(1)
+
+boosted_rmse <- boosted_tuned %>% 
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>% 
+  arrange(mean)%>% 
+  slice(1)
+
+final_compare <- tibble(
+  Model = c("Linear Regression", "Ridge Regression", "k-Nearest Neighbors", "Random Forest", "Boosted Trees"), 
+                               RMSE = c(lm_rmse$mean, ridge_rmse$mean, knn_rmse$mean, random_rmse$mean, boosted_rmse$mean)
+  ) %>% 
+  arrange(RMSE)
+
+final_compare
+```
+
+From the table above, we can see that our Boosted Tree model performed the best overall with a RMSE value of 29.58. However, this has only been fitted to the training data. We'll have to revisit the testing data we created earlier for our model to perform on.
+
+## Best Model
+
+Let's give a round of applause to...
+
+```{r}
+show_best(boosted_tuned, metric = "rmse") %>% 
+  slice(1)
+```
+
+Boosted Trees 84! With 752 trees, a minimal node size of 15, and a learning rate of 0.0775, Boosted Trees 84 performed the best with an RMSE of 29.58.
+
+## Testing the Model
+
+Let's first finalize our workflow based on the best performing model and fit this final workflow to the training data to train the model again.
+
+```{r}
+final_wf <- boosted_wf %>% 
+  finalize_workflow(select_best(boosted_tuned, metric = "rmse"))
+final_fit <- fit(final_wf, data = fitness_train)
+```
+
+Our final fitted model is now ready for testing!
+
+```{r}
+calories_pred_compare <- predict(final_fit, new_data = fitness_test %>%
+                              select(-calories_burned)) %>% 
+  bind_cols(fitness_test 
+            %>% select(calories_burned))
+calories_pred_compare %>% 
+  head()
+```
+
+Our model is performing very well! The predicted values almost match the actual values! We can take a look at the RMSE for this specific model.
+
+```{r}
+calories_metric <- metric_set(rmse)
+final_rmse <- calories_metric(calories_pred_compare, 
+                              truth = calories_burned, 
+                              estimate = .pred)
+final_rmse
+```
+
+Our model performed with a RMSE value of 31.00. That's pretty dang good! Generally, you want your RMSE value to fall between 0.2 and 0.5 to indicate that the model is able to predict the data accurately. I would say that we were pretty successful in creating an accurate model!
+
+# Conclusion
+
+Throughout this project, we have explored and analyzed our data to create and test a model that could predict how many calories a person would burn during a workout session. In our Exploratory Data Analysis, we could see that session duration would play the largest role in predicting the amount of calories burnt. This makes intuitive sense since the longer your workout, the more energy you have to expend.
+
+Thus, after hours, days, and weeks of altering, testing, and computing, we can finally say that out of the models built and tested, the Boosted Trees model was the best at predicting our outcome. That is not to say that it was a perfect model; it can definitely do better. There are a lot of nuances and factors when it comes to bodily functions, like calories burnt. Different health conditions or fitness levels could be the cause of some of the random noise in the data. These are the things we cannot control.
+
+Overall, this project has challenged me in many ways so that I am able to learn more about machine learning. Even if our model was not perfect, I still found pleasure in being able to mostly explain the behavior in the amount of calories burned. My biggest takeaway is that heart rate and the length of your workouts are the biggest factors in calorie burn. This seems like an already intuitive takeaway, but it is also confirmation that provides more confidence in my routines.
