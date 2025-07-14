@@ -2,26 +2,5 @@ title: Kerry Yu
 logo: /assets/img/Kerry 016.png
 description: Recent UC Santa Barbara graduate with a Bachelors of Science (B.S.) in Statistics and Data Science. 
 theme: jekyll-theme-minimal
-
-<!-- _includes/footer.html -->
-<footer>
-  <p>
-    <a href="https://www.linkedin.com/in/kerryyu/" target="_blank">View My LinkedIn Profile</a>
-  </p>
-</footer>
-
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>{{ site.title }}</title>
-    <meta name="description" content="{{ site.description }}">
-    <link rel="stylesheet" href="{{ '/assets/main.css' | relative_url }}">
-  </head>
-  <body>
-    <div class="container">
-      {{ content }}
-      {% include footer.html %}
-    </div>
-  </body>
-</html>
+footer-links:
+  linkedin: https://www.linkedin.com/in/kerry-yu-849129369/
